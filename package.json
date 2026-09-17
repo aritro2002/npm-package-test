@@ -1,5 +1,5 @@
 {
-  "name": "simple-add",
+  "name": "@aritro2002/simple-add",
   "version": "1.0.0",
   "description": "A very simple addition utility.",
   "main": "src/index.js",
@@ -16,5 +16,12 @@
   "license": "MIT",
   "files": [
     "src"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aritro2002/npm-package-test.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
