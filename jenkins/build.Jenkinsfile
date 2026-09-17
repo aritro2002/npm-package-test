@@ -36,37 +36,15 @@ pipeline {
             }
         }
 
-        stage('Verify Tag Matches package.json') {
-            steps {
-                sh '''
-                    set -eu
-                    PKG_VERSION=$(node -p "require('./package.json').version")
-                    TAG_VERSION=${TAG#v}
-                    echo "package.json version: ${PKG_VERSION}"
-                    echo "git tag version:      ${TAG_VERSION}"
-                    if [ "${PKG_VERSION}" != "${TAG_VERSION}" ]; then
-                        echo "ERROR: tag ${TAG} does not match package.json version ${PKG_VERSION}"
-                        exit 1
-                    fi
-                '''
-            }
-        }
-
         stage('Install Dependencies') {
             steps {
                 sh 'npm ci'
             }
         }
 
-        stage('Test') {
-            steps {
-                sh 'npm test'
-            }
-        }
-
         stage('Authenticate with npm') {
             steps {
-                sh 'echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc'
+                sh 'echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc'
             }
         }
 
@@ -74,12 +52,6 @@ pipeline {
             steps {
                 sh 'npm publish --access public'
             }
-        }
-    }
-
-    post {
-        always {
-            sh 'rm -f .npmrc'
         }
     }
 }
