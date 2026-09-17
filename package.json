@@ -1,6 +1,6 @@
 {
   "name": "@aritro2002/simple-add",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A very simple addition utility.",
   "main": "src/index.js",
   "type": "commonjs",
