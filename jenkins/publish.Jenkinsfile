@@ -466,15 +466,26 @@ process.stdout.write(rows.join('\\n'));
         stage('Authenticate npm') {
             steps {
                 script {
-                    withNpmToken {
+                    withNpmToken { tokenVar ->
+                        // Pass the variable NAME through Groovy, never the secret
+                        // itself: interpolating a secret into a step argument
+                        // defeats Jenkins' log masking.
+                        env.TOKEN_VAR = tokenVar
+
+                        // `set +x` first. Jenkins runs sh with tracing enabled,
+                        // so without it the line that writes the token is echoed
+                        // to the console in plaintext.
                         sh '''
+                            set +x
                             set -eu
                             umask 077
+                            token=$(printenv "$TOKEN_VAR")
                             registry_host=$(echo "$REGISTRY" | sed -E 's#^https?://##; s#/$##')
                             {
                                 echo "registry=$REGISTRY"
-                                echo "//$registry_host/:_authToken=$RESOLVED_NPM_TOKEN"
+                                echo "//$registry_host/:_authToken=$token"
                             } > "$NPM_CONFIG_USERCONFIG"
+                            echo "Wrote npm credentials for $registry_host"
                         '''
 
                         // A dry run should still work with a placeholder
@@ -503,8 +514,10 @@ process.stdout.write(rows.join('\\n'));
                     def skipped = []
                     def failed = []
 
-                    withNpmToken {
-                        entries.each { entry ->
+                    // No withNpmToken here: the .npmrc written in the previous
+                    // stage is already in force via NPM_CONFIG_USERCONFIG, so the
+                    // secret never has to be handled a second time.
+                    entries.each { entry ->
                             def parts = entry.split('\\|')
                             def name = parts[0]
                             def version = parts[1]
@@ -550,7 +563,6 @@ process.stdout.write(rows.join('\\n'));
                                 failed << "${name}@${version}"
                                 echo "FAILED to publish ${name}@${version} (exit ${status})"
                             }
-                        }
                     }
 
                     env.SUMMARY_PUBLISHED = published.join(', ')
@@ -594,24 +606,20 @@ process.stdout.write(rows.join('\\n'));
     }
 }
 
-/**
- * Resolves the npm token and runs `body` with it exposed as
- * RESOLVED_NPM_TOKEN. Order: NPM_TOKEN parameter, then the "npm-token"
- * Jenkins credential, then NPM_TOKEN from the agent environment.
- */
 def withNpmToken(Closure body) {
-    // Read the password parameter from the environment, not from params:
-    // params.NPM_TOKEN_INPUT hands back a hudson.util.Secret, which has no
-    // String methods. Jenkins puts the plaintext in env for password
-    // parameters (PasswordParameterValue.buildEnvironment -> Secret.toString),
-    // and masks it in the console.
-    def fromParameter = env.NPM_TOKEN_INPUT?.trim()
-
-    if (fromParameter) {
+    // Hands `body` the NAME of the environment variable holding the token,
+    // never the token itself. Interpolating a secret into a Groovy string
+    // defeats Jenkins' log masking, which is what leaked it before.
+    //
+    // Order: NPM_TOKEN_INPUT parameter, then the "npm-token" Jenkins
+    // credential, then NPM_TOKEN from the agent environment.
+    //
+    // The parameter is read from env rather than params because a password
+    // parameter surfaces through params as a hudson.util.Secret, which has no
+    // String methods; Jenkins puts the plaintext in env for password params.
+    if (env.NPM_TOKEN_INPUT?.trim()) {
         echo 'Using npm token from the build parameter.'
-        withEnv(["RESOLVED_NPM_TOKEN=${fromParameter}"]) {
-            body()
-        }
+        body('NPM_TOKEN_INPUT')
         return
     }
 
@@ -626,17 +634,15 @@ def withNpmToken(Closure body) {
 
     if (hasCredential) {
         echo 'Using the "npm-token" Jenkins credential.'
-        withCredentials([string(credentialsId: 'npm-token', variable: 'RESOLVED_NPM_TOKEN')]) {
-            body()
+        withCredentials([string(credentialsId: 'npm-token', variable: 'NPM_TOKEN_CRED')]) {
+            body('NPM_TOKEN_CRED')
         }
         return
     }
 
     if (env.NPM_TOKEN?.trim()) {
         echo 'Using NPM_TOKEN from the agent environment.'
-        withEnv(["RESOLVED_NPM_TOKEN=${env.NPM_TOKEN}"]) {
-            body()
-        }
+        body('NPM_TOKEN')
         return
     }
 
