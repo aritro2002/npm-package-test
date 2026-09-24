@@ -56,6 +56,21 @@ workspace-local `.npmrc` (via `NPM_CONFIG_USERCONFIG`) and deleted in `post`.
 It is never written to `~/.npmrc`, which would outlive the build and leak the
 token to every other job on the agent.
 
+The parameter is named `NPM_TOKEN_INPUT`, not `NPM_TOKEN`, so it cannot shadow
+the agent-level `NPM_TOKEN` variable that is the third fallback. Its value is
+read from the build environment rather than `params`, because a password
+parameter surfaces through `params` as a `hudson.util.Secret` object with no
+String methods.
+
+**The token never passes through Groovy.** `withNpmToken` hands its closure the
+*name* of the environment variable holding the token, not the value:
+interpolating a secret into a step argument defeats Jenkins' log masking. The
+shell that writes `.npmrc` runs `set +x` first and reads the value with
+`printenv`, because Jenkins runs `sh` with tracing enabled and would otherwise
+echo the token to the console in plaintext. Only the authenticate stage touches
+the secret; publishing relies on the `.npmrc` already in force through
+`NPM_CONFIG_USERCONFIG`.
+
 ### How packages are discovered
 
 The pipeline does not hardcode a package list. After checkout it reads the
@@ -74,12 +89,12 @@ Verified against the two configured repos:
 
 ```
 aritro2002/npm-multi-package @ v0.1.0
-  [public]  @aritro-tech/addition@0.1.0        packages/@aritro-tech/addition
-  [public]  @aritro-tech/calculator@0.1.0      packages/@aritro-tech/calculator
-  [public]  @aritro-tech/multiplication@0.1.0  packages/@aritro-tech/multiplication
-  [public]  @aritro-tech/regex@0.1.0           packages/@aritro-tech/regex
-  [public]  @aritro-tech/subtraction@0.1.0     packages/@aritro-tech/subtraction
-  [private] @aritro-tech/example@0.0.0         example
+  [public]  @aritro2002/addition@0.1.0        packages/@aritro2002/addition
+  [public]  @aritro2002/calculator@0.1.0      packages/@aritro2002/calculator
+  [public]  @aritro2002/multiplication@0.1.0  packages/@aritro2002/multiplication
+  [public]  @aritro2002/regex@0.1.0           packages/@aritro2002/regex
+  [public]  @aritro2002/subtraction@0.1.0     packages/@aritro2002/subtraction
+  [private] @aritro2002/example@0.0.0         example
   [private] npm-multi-package@1.0.0            .
 
 juspay/hyperswitch-web @ v0.133.0
@@ -103,7 +118,7 @@ submodule) so it works the moment it gains a publishable package.
 2. **Validate tag** — `git ls-remote`; on a miss, print the 20 most recent tags.
 3. **Checkout** — the tag into `source/`, so pipeline files at the workspace
    root survive the clone. Submodules when the repo needs them.
-4. **Discover packages** — as above; honours `PACKAGES` and fails on a typo.
+4. **Discover packages** — as above; every public package found is published.
 5. **Install** — `npm ci` when a lockfile exists, else `npm install`.
 6. **Build** / **Test** — skipped when the repo has no such script.
 7. **Authenticate npm** — write the workspace-local `.npmrc`, then `npm whoami`
