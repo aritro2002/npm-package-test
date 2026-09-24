@@ -4,6 +4,71 @@
 | --- | --- |
 | `build.Jenkinsfile` | Original single-package pipeline, hardcoded to `npm-package-test`. Kept as reference. |
 | `publish.Jenkinsfile` | Multi-repo, multi-package npm publish pipeline. |
+| `publish-hyperswitch.Jenkinsfile` | Publishes one Hyperswitch package, re-scoped to `@aritro2002`. |
+
+---
+
+## publish-hyperswitch.Jenkinsfile
+
+Three parameters: **PACKAGE**, **TAG**, **NPM_TOKEN_INPUT**.
+
+Pick a package; the TAG list reloads with that package's tags. The pipeline
+checks the upstream Juspay repo out at that tag, builds, re-scopes and
+publishes.
+
+### Re-scoping
+
+The upstream packages live under `@juspay-tech`, which we cannot publish to.
+Before publishing, the pipeline rewrites the package's own `name`:
+
+```
+@juspay-tech/react-native-hyperswitch-scancard
+        ->  @aritro2002/react-native-hyperswitch-scancard@0.2.2
+```
+
+and sets `publishConfig.access: public`, since a scoped package is restricted
+by default.
+
+**Dependencies are deliberately left alone.** They keep pointing at the real
+`@juspay-tech` packages already on npm, so the republished package still
+installs. Rewriting them would break it unless every dependency were
+republished too.
+
+### Packages and their tags
+
+| Package | Repo | Tag scheme |
+| --- | --- | --- |
+| `hyper-js` | `juspay/hyper-js` | `v2.1.0` (repo-wide) |
+| `react-hyper-js` | `juspay/react-hyper-js` | `v1.3.0` (repo-wide) |
+| the 8 `react-native-hyperswitch*` packages | `juspay/react-native-hyperswitch` | `@juspay-tech/<name>@<version>` (per package) |
+
+The monorepo uses Lerna independent versioning, so its tags are per package
+rather than repo-wide. The TAG list filters to the selected package, matching
+both the scoped form and the older unscoped one (`react-native-hyperswitch-click-to-pay@0.2.0`)
+that a few early tags use. The trailing `@` anchors the match, so
+`react-native-hyperswitch` does not swallow `react-native-hyperswitch-scancard`
+tags.
+
+Because those tag names contain `/` and `@`, refs are split on the literal
+`refs/tags/` rather than on the last `/` -- the latter silently drops the
+`@juspay-tech/` scope and yields a tag that does not exist.
+
+**Two packages have no tags at all** upstream: `react-native-hyperswitch-payment-methods`
+and `react-native-hyperswitch-paypal`. Selecting either shows
+`-- no tags for ... --` and the build stops there.
+
+### Notes
+
+- `react-native-hyperswitch` is a **yarn 3** workspace; the two web repos use
+  npm. The install stage picks by lockfile and falls back to `npm install` when
+  yarn is not on the agent.
+- There is no `DRY_RUN`. A re-run is still safe: the pipeline checks the
+  registry first and skips a version that is already published, rather than
+  failing on npm's republish error.
+
+---
+
+## publish.Jenkinsfile
 
 ## publish.Jenkinsfile
 
