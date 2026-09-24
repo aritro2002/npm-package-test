@@ -187,8 +187,8 @@ pipeline {
                              name                : 'PACKAGE',
                              description         : 'Package to publish. Changing this reloads the TAG list.',
                              choiceType          : 'PT_SINGLE_SELECT',
-                             filterable          : true,
-                             filterLength        : 1,
+                             // No filter box: ten fixed entries do not need one.
+                             filterable          : false,
                              randomName          : 'choice-parameter-package',
                              script              : [
                                  $class        : 'GroovyScript',
@@ -200,8 +200,9 @@ pipeline {
                              description         : 'Tag to publish, newest first, listed for the package selected above.',
                              choiceType          : 'PT_SINGLE_SELECT',
                              referencedParameters: 'PACKAGE',
-                             filterable          : true,
-                             filterLength        : 1,
+                             // No filter box: no package here has more than a
+                             // handful of tags.
+                             filterable          : false,
                              randomName          : 'choice-parameter-tag',
                              script              : [
                                  $class        : 'GroovyScript',
