@@ -15,7 +15,7 @@ Publishes one or more npm packages from a chosen repository at a chosen git tag.
 | --- | --- | --- |
 | `REPOSITORY` | `aritro2002/npm-multi-package` | Repo to publish from. Changing it reloads `TAG`. |
 | `TAG` | *(newest)* | Git tag, listed newest first **for the selected repository**. |
-| `NPM_TOKEN` | *(empty)* | npm token. Blank falls back to the credential, then the agent env. |
+| `NPM_TOKEN_INPUT` | *(empty)* | npm token. Blank falls back to the credential, then the agent env. |
 | `DRY_RUN` | **`true`** | Runs `npm publish --dry-run`. **Uncheck to actually publish.** |
 | `SKIP_TESTS` | `false` | Skip the test stage. |
 
@@ -47,7 +47,7 @@ trying to check one out.
 
 Checked in order, first hit wins:
 
-1. the `NPM_TOKEN` build parameter,
+1. the `NPM_TOKEN_INPUT` build parameter,
 2. a Jenkins **Secret text** credential with ID `npm-token`,
 3. `NPM_TOKEN` from the agent environment.
 

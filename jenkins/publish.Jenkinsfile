@@ -16,8 +16,14 @@
  * credential -> agent NPM_TOKEN environment variable.
  */
 
+import groovy.transform.Field
+
+// @Field rather than a bare assignment: a bare one becomes an implicit script
+// field and Jenkins warns about leaks; a plain `def` would be a local of the
+// generated run() method and invisible inside the pipeline closures.
+
 // Add a repository here AND to REPO_CHOICES_SCRIPT / TAG_CHOICES_SCRIPT below.
-REPO_CONFIG = [
+@Field Map REPO_CONFIG = [
     'aritro2002/npm-multi-package': [
         url       : 'https://github.com/aritro2002/npm-multi-package.git',
         submodules: false,
@@ -38,14 +44,14 @@ REPO_CONFIG = [
 // Active Choices scripts run on the controller in their own context and cannot
 // see the globals above, so the repository list is repeated inside them.
 
-REPO_CHOICES_SCRIPT = '''
+@Field String REPO_CHOICES_SCRIPT = '''
 return [
     'aritro2002/npm-multi-package',
     'juspay/hyperswitch-web',
 ]
 '''
 
-TAG_CHOICES_SCRIPT = '''
+@Field String TAG_CHOICES_SCRIPT = '''
 def urls = [
     'aritro2002/npm-multi-package': 'https://github.com/aritro2002/npm-multi-package.git',
     'juspay/hyperswitch-web'      : 'https://github.com/juspay/hyperswitch-web.git',
@@ -156,9 +162,12 @@ pipeline {
                                  fallbackScript: [classpath: [], sandbox: false, script: "return ['ERROR: could not list tags']"],
                                  script        : [classpath: [], sandbox: false, script: TAG_CHOICES_SCRIPT],
                              ]],
+                            // No defaultValue: PasswordParameterDefinition does not
+                            // accept one and Jenkins warns. Blank is the default anyway.
+                            // Named _INPUT so it cannot collide with an agent-level
+                            // NPM_TOKEN environment variable, which is the last fallback.
                             password(
-                                name: 'NPM_TOKEN',
-                                defaultValue: '',
+                                name: 'NPM_TOKEN_INPUT',
                                 description: 'npm automation token. Leave blank to use the "npm-token" Jenkins credential, then the agent NPM_TOKEN env var.'
                             ),
                             booleanParam(
@@ -244,19 +253,22 @@ pipeline {
             steps {
                 script {
                     def extensions = [
-                        [$class: 'RelativeTargetDirectory', relativeTargetDir: env.SRC],
                         [$class: 'CloneOption', shallow: true, depth: 1, noTags: false, timeout: 20],
                     ]
                     if (env.REPO_SUBMODULES == 'true') {
                         extensions << [$class: 'SubmoduleOption', recursiveSubmodules: true, parentCredentials: true]
                     }
 
-                    checkout([
-                        $class           : 'GitSCM',
-                        branches         : [[name: "refs/tags/${env.RESOLVED_TAG}"]],
-                        extensions       : extensions,
-                        userRemoteConfigs: [[url: env.REPO_URL]],
-                    ])
+                    // dir() rather than the RelativeTargetDirectory extension,
+                    // which the Git plugin deprecates for Pipeline jobs.
+                    dir(env.SRC) {
+                        checkout([
+                            $class           : 'GitSCM',
+                            branches         : [[name: "refs/tags/${env.RESOLVED_TAG}"]],
+                            extensions       : extensions,
+                            userRemoteConfigs: [[url: env.REPO_URL]],
+                        ])
+                    }
                 }
 
                 sh '''
@@ -565,7 +577,8 @@ process.stdout.write(rows.join('\\n'));
                 ================ SUMMARY ================
                 Repository : ${params.REPOSITORY ?: '-'}
                 Tag        : ${params.TAG ?: '-'}
-                Mode       : ${params.DRY_RUN ? 'DRY RUN (nothing was published)' : 'PUBLISHED'}
+                Mode       : ${params.DRY_RUN ? 'DRY RUN (nothing was published)' : 'LIVE PUBLISH'}
+                Result     : ${currentBuild.currentResult}
                 Published  : ${env.SUMMARY_PUBLISHED ?: '-'}
                 Skipped    : ${env.SUMMARY_SKIPPED ?: '-'}
                 Failed     : ${env.SUMMARY_FAILED ?: '-'}
@@ -587,9 +600,16 @@ process.stdout.write(rows.join('\\n'));
  * Jenkins credential, then NPM_TOKEN from the agent environment.
  */
 def withNpmToken(Closure body) {
-    if (params.NPM_TOKEN?.trim()) {
+    // Read the password parameter from the environment, not from params:
+    // params.NPM_TOKEN_INPUT hands back a hudson.util.Secret, which has no
+    // String methods. Jenkins puts the plaintext in env for password
+    // parameters (PasswordParameterValue.buildEnvironment -> Secret.toString),
+    // and masks it in the console.
+    def fromParameter = env.NPM_TOKEN_INPUT?.trim()
+
+    if (fromParameter) {
         echo 'Using npm token from the build parameter.'
-        withEnv(["RESOLVED_NPM_TOKEN=${params.NPM_TOKEN}"]) {
+        withEnv(["RESOLVED_NPM_TOKEN=${fromParameter}"]) {
             body()
         }
         return
@@ -622,7 +642,7 @@ def withNpmToken(Closure body) {
 
     error('''
         No npm token available. Provide one of:
-          1. the NPM_TOKEN build parameter,
+          1. the NPM_TOKEN_INPUT build parameter,
           2. a Jenkins "Secret text" credential with ID "npm-token",
           3. an NPM_TOKEN environment variable on the agent.
     '''.stripIndent().trim())
