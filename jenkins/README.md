@@ -13,19 +13,35 @@ Publishes one or more npm packages from a chosen repository at a chosen git tag.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `REPOSITORY` | `aritro2002/npm-multi-package` | Repo to publish from. Also `juspay/hyperswitch-web`, or `other`. |
-| `CUSTOM_REPO_URL` | *(empty)* | Clone URL, used only when `REPOSITORY` is `other`. |
-| `TAG` | *(empty)* | Git tag to publish, e.g. `v0.1.0`. Validated before checkout. |
-| `PACKAGES` | `all` | Comma-separated package names, or `all`. |
+| `REPOSITORY` | `aritro2002/npm-multi-package` | Repo to publish from. Changing it reloads `TAG`. |
+| `TAG` | *(newest)* | Git tag, listed newest first **for the selected repository**. |
 | `NPM_TOKEN` | *(empty)* | npm token. Blank falls back to the credential, then the agent env. |
-| `NPM_DIST_TAG` | `latest` | npm dist-tag (`latest`, `next`, `beta`…). |
-| `REGISTRY` | `https://registry.npmjs.org/` | Target registry. |
 | `DRY_RUN` | **`true`** | Runs `npm publish --dry-run`. **Uncheck to actually publish.** |
 | `SKIP_TESTS` | `false` | Skip the test stage. |
 
 `DRY_RUN` defaults to on deliberately: `npm publish` cannot be undone (npm
 only allows unpublish within 72 hours, under conditions), so publishing is
 opt-in rather than the result of a mis-click.
+
+Everything else is fixed in the Jenkinsfile rather than asked per build:
+the registry is `https://registry.npmjs.org/`, the dist-tag is `latest`, and
+every publishable package found at the tag is published.
+
+### The TAG dropdown
+
+`TAG` is an Active Choices **reactive** parameter: it re-runs
+`git ls-remote --tags` against whichever `REPOSITORY` is selected and
+repopulates itself, so you only ever see tags that actually exist there.
+
+Tags are ordered newest first. Numeric components are zero-padded before
+comparison, so `v0.133.0` ranks above `v0.99.0` above `v0.9.0` rather than
+sorting lexicographically. Tags that do not start with a number (for example
+`test-2025.06.30.01`) are pushed below real releases. The field is filterable,
+which matters for hyperswitch-web -- it currently has 985 tags.
+
+If the remote cannot be reached the dropdown shows a bracketed placeholder
+such as `-- could not reach ... --`; the pipeline rejects those rather than
+trying to check one out.
 
 ### Token resolution
 
@@ -109,12 +125,20 @@ A summary of published / skipped / failed prints in `post`.
 
 Required agent tooling: `git`, `node`, `npm`.
 
-Plugins: **Pipeline**, **Git**, **Credentials Binding** — and nothing else.
+Plugins: **Pipeline**, **Git**, **Credentials Binding**, and
+**Active Choices** (`uno-choice`).
+
+Active Choices is required and has no core equivalent: a declarative
+`parameters {}` block is static and cannot react to another parameter, so a
+repository-dependent tag list is impossible without it. That is also why the
+parameters are declared via `properties([parameters([...])])` in the first
+stage rather than in a `parameters {}` block.
+
 The pipeline deliberately avoids `timestamps()` (Timestamper plugin) and
 `cleanWs()` (Workspace Cleanup plugin), using the core `deleteDir()` step
-instead, so it runs on a stock Jenkins. Unlike `build.Jenkinsfile`, no Git
-Parameter plugin is needed either — `TAG` is a validated string, which is
-what allows one job to serve several repositories.
+instead. The Git Parameter plugin is not used either: its `useRepository`
+binding ties a job to one SCM, which is exactly what would stop a single job
+from serving several repositories.
 
 ### Examples
 
@@ -123,16 +147,13 @@ Dry run of everything at a tag:
 ```
 REPOSITORY = aritro2002/npm-multi-package
 TAG        = v0.1.0
-PACKAGES   = all
 DRY_RUN    = true
 ```
 
-Publish two packages for real, under a beta dist-tag:
+Publish for real:
 
 ```
-REPOSITORY   = aritro2002/npm-multi-package
-TAG          = v0.1.0
-PACKAGES     = @aritro-tech/regex,@aritro-tech/addition
-NPM_DIST_TAG = beta
-DRY_RUN      = false
+REPOSITORY = aritro2002/npm-multi-package
+TAG        = v0.1.0
+DRY_RUN    = false
 ```

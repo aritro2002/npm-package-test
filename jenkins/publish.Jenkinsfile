@@ -1,15 +1,22 @@
 /*
  * Multi-repo, multi-package npm publish pipeline.
  *
- * Publishes one or more npm packages from a chosen repository at a chosen git
- * tag. Packages are discovered from the checked-out tree (npm/yarn workspaces,
- * or a packages/ scan) rather than hardcoded, so a repo that gains or loses a
- * package needs no pipeline change.
+ * Publishes every publishable npm package from a chosen repository at a chosen
+ * git tag. Packages are discovered from the checked-out tree (npm/yarn
+ * workspaces, or a packages/ scan) rather than hardcoded, so a repo that gains
+ * or loses a package needs no pipeline change.
  *
- * Token resolution order: TOKEN parameter -> Jenkins credential -> agent env.
+ * TAG is an Active Choices reactive parameter: picking a REPOSITORY reloads the
+ * tag list for that repository, newest first.
+ *
+ * REQUIRES the Active Choices plugin (uno-choice). Without it the Parameters
+ * stage fails. See jenkins/README.md.
+ *
+ * Token resolution order: NPM_TOKEN parameter -> "npm-token" Jenkins
+ * credential -> agent NPM_TOKEN environment variable.
  */
 
-// Add a repository here to make it selectable. `url` is the only required key.
+// Add a repository here AND to REPO_CHOICES_SCRIPT / TAG_CHOICES_SCRIPT below.
 REPO_CONFIG = [
     'aritro2002/npm-multi-package': [
         url       : 'https://github.com/aritro2002/npm-multi-package.git',
@@ -19,8 +26,8 @@ REPO_CONFIG = [
     ],
     'juspay/hyperswitch-web'      : [
         // NOTE: this repo's root package.json is currently `private: true`
-        // (orca-payment-page) and declares no workspaces, so discovery will
-        // find nothing publishable. The pipeline reports that and stops.
+        // (orca-payment-page) and declares no workspaces, so discovery finds
+        // nothing publishable. The pipeline reports that and stops.
         url       : 'https://github.com/juspay/hyperswitch-web.git',
         submodules: true,
         buildTask : 'build',
@@ -28,63 +35,76 @@ REPO_CONFIG = [
     ],
 ]
 
+// Active Choices scripts run on the controller in their own context and cannot
+// see the globals above, so the repository list is repeated inside them.
+
+REPO_CHOICES_SCRIPT = '''
+return [
+    'aritro2002/npm-multi-package',
+    'juspay/hyperswitch-web',
+]
+'''
+
+TAG_CHOICES_SCRIPT = '''
+def urls = [
+    'aritro2002/npm-multi-package': 'https://github.com/aritro2002/npm-multi-package.git',
+    'juspay/hyperswitch-web'      : 'https://github.com/juspay/hyperswitch-web.git',
+]
+
+def url = urls[REPOSITORY]
+if (!url) {
+    return ['-- select a repository --']
+}
+
+try {
+    def proc = ['git', 'ls-remote', '--tags', '--refs', url].execute()
+    def stdout = new StringBuilder()
+    def stderr = new StringBuilder()
+    proc.consumeProcessOutput(stdout, stderr)
+    proc.waitForOrKill(30000)
+
+    if (proc.exitValue() != 0) {
+        return ['-- could not reach ' + url + ' --']
+    }
+
+    def marker = 'refs/tags/'
+    def tags = stdout.toString().readLines()
+        .findAll { it.contains(marker) }
+        .collect { it.substring(it.indexOf(marker) + marker.length()).trim() }
+        .findAll { it }
+        .unique()
+
+    if (!tags) {
+        return ['-- no tags in this repository --']
+    }
+
+    // Newest first. Numeric components are zero-padded so the comparison is
+    // version-aware rather than lexicographic, which would put v0.9.0 above
+    // v0.10.0. The leading '1'/'0' flag keeps non-version tags such as
+    // 'test-2025.06.30.01' below real releases, since letters otherwise
+    // outrank digits in a string comparison.
+    def key = { tag ->
+        def parts = tag.replaceFirst('^v', '').split('[._+-]')
+        def numericFirst = parts && parts[0].isInteger() ? '1' : '0'
+        numericFirst + parts.collect { part ->
+            part.isInteger() ? part.padLeft(10, '0') : part
+        }.join('.')
+    }
+
+    return tags.sort { a, b -> key(b) <=> key(a) }
+} catch (failure) {
+    return ['-- error listing tags: ' + failure.getMessage() + ' --']
+}
+'''
+
 pipeline {
     agent any
 
     options {
-        // No timestamps() here: it needs the Timestamper plugin. Everything
-        // used below ships with core Pipeline.
-        disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '30'))
+        // buildDiscarder and disableConcurrentBuilds are job *properties*, so
+        // they are set in the properties() call below. Setting them here too
+        // would make the two calls fight over the same job config.
         timeout(time: 45, unit: 'MINUTES')
-    }
-
-    parameters {
-        choice(
-            name: 'REPOSITORY',
-            choices: ['aritro2002/npm-multi-package', 'juspay/hyperswitch-web', 'other'],
-            description: 'Repository to publish from. Pick "other" to supply a URL in CUSTOM_REPO_URL.'
-        )
-        string(
-            name: 'CUSTOM_REPO_URL',
-            defaultValue: '',
-            description: 'Clone URL, used only when REPOSITORY is "other". Example: https://github.com/org/repo.git'
-        )
-        string(
-            name: 'TAG',
-            defaultValue: '',
-            description: 'Git tag to publish, e.g. v0.1.0. The build fails with a list of available tags if this does not exist.'
-        )
-        string(
-            name: 'PACKAGES',
-            defaultValue: 'all',
-            description: 'Comma-separated package names to publish, or "all". Example: @aritro-tech/regex,@aritro-tech/addition'
-        )
-        password(
-            name: 'NPM_TOKEN',
-            defaultValue: '',
-            description: 'npm automation token. Leave blank to use the "npm-token" Jenkins credential, then the agent NPM_TOKEN env var.'
-        )
-        string(
-            name: 'NPM_DIST_TAG',
-            defaultValue: 'latest',
-            description: 'npm dist-tag to publish under (latest, next, beta...).'
-        )
-        string(
-            name: 'REGISTRY',
-            defaultValue: 'https://registry.npmjs.org/',
-            description: 'Target npm registry.'
-        )
-        booleanParam(
-            name: 'DRY_RUN',
-            defaultValue: true,
-            description: 'Runs npm publish --dry-run. UNCHECK THIS TO ACTUALLY PUBLISH. npm publish cannot be undone, so this defaults to on.'
-        )
-        booleanParam(
-            name: 'SKIP_TESTS',
-            defaultValue: false,
-            description: 'Skip the test stage.'
-        )
     }
 
     environment {
@@ -94,48 +114,106 @@ pipeline {
         // Workspace-local npmrc. Never write to ~/.npmrc: it outlives the
         // build and leaks the token to every other job on the agent.
         NPM_CONFIG_USERCONFIG = "${WORKSPACE}/.npmrc-publish"
+        REGISTRY = 'https://registry.npmjs.org/'
+        NPM_DIST_TAG = 'latest'
     }
 
     stages {
 
+        stage('Parameters') {
+            steps {
+                script {
+                    // Active Choices parameters cannot be expressed in a
+                    // declarative `parameters {}` block, so the whole parameter
+                    // set is defined here. Changes take effect from the next
+                    // build onwards.
+                    properties([
+                        buildDiscarder(logRotator(numToKeepStr: '30')),
+                        disableConcurrentBuilds(),
+                        parameters([
+                            [$class             : 'ChoiceParameter',
+                             name               : 'REPOSITORY',
+                             description        : 'Repository to publish from. Changing this reloads the TAG list.',
+                             choiceType         : 'PT_SINGLE_SELECT',
+                             filterable         : false,
+                             filterLength       : 1,
+                             randomName         : 'choice-parameter-repository',
+                             script             : [
+                                 $class        : 'GroovyScript',
+                                 fallbackScript: [classpath: [], sandbox: false, script: "return ['ERROR: could not load repository list']"],
+                                 script        : [classpath: [], sandbox: false, script: REPO_CHOICES_SCRIPT],
+                             ]],
+                            [$class             : 'CascadeChoiceParameter',
+                             name               : 'TAG',
+                             description        : 'Git tag to publish, listed newest first for the repository selected above.',
+                             choiceType         : 'PT_SINGLE_SELECT',
+                             referencedParameters: 'REPOSITORY',
+                             filterable         : true,
+                             filterLength       : 1,
+                             randomName         : 'choice-parameter-tag',
+                             script             : [
+                                 $class        : 'GroovyScript',
+                                 fallbackScript: [classpath: [], sandbox: false, script: "return ['ERROR: could not list tags']"],
+                                 script        : [classpath: [], sandbox: false, script: TAG_CHOICES_SCRIPT],
+                             ]],
+                            password(
+                                name: 'NPM_TOKEN',
+                                defaultValue: '',
+                                description: 'npm automation token. Leave blank to use the "npm-token" Jenkins credential, then the agent NPM_TOKEN env var.'
+                            ),
+                            booleanParam(
+                                name: 'DRY_RUN',
+                                defaultValue: true,
+                                description: 'Runs npm publish --dry-run. UNCHECK THIS TO ACTUALLY PUBLISH. npm publish cannot be undone, so this defaults to on.'
+                            ),
+                            booleanParam(
+                                name: 'SKIP_TESTS',
+                                defaultValue: false,
+                                description: 'Skip the test stage.'
+                            ),
+                        ]),
+                    ])
+
+                    if (!params.REPOSITORY) {
+                        error('''
+                            Parameters have now been registered on this job.
+                            This first run had none to work with, which is expected.
+                            Re-run via "Build with Parameters" to publish.
+                        '''.stripIndent().trim())
+                    }
+                }
+            }
+        }
+
         stage('Resolve target') {
             steps {
                 script {
-                    def selected = params.REPOSITORY
-
-                    if (selected == 'other') {
-                        if (!params.CUSTOM_REPO_URL?.trim()) {
-                            error('REPOSITORY is "other" but CUSTOM_REPO_URL is empty.')
-                        }
-                        env.REPO_URL = params.CUSTOM_REPO_URL.trim()
-                        env.REPO_SUBMODULES = 'false'
-                        env.BUILD_TASK = 'build'
-                        env.TEST_TASK = 'test'
-                    } else {
-                        def cfg = REPO_CONFIG[selected]
-                        if (!cfg) {
-                            error("No configuration for repository '${selected}'.")
-                        }
-                        env.REPO_URL = cfg.url
-                        env.REPO_SUBMODULES = cfg.submodules ? 'true' : 'false'
-                        env.BUILD_TASK = cfg.buildTask ?: ''
-                        env.TEST_TASK = cfg.testTask ?: ''
+                    def cfg = REPO_CONFIG[params.REPOSITORY]
+                    if (!cfg) {
+                        error("No configuration for repository '${params.REPOSITORY}'.")
                     }
 
-                    if (!params.TAG?.trim()) {
-                        error('TAG is required.')
-                    }
-                    env.RESOLVED_TAG = params.TAG.trim()
+                    env.REPO_URL = cfg.url
+                    env.REPO_SUBMODULES = cfg.submodules ? 'true' : 'false'
+                    env.BUILD_TASK = cfg.buildTask ?: ''
+                    env.TEST_TASK = cfg.testTask ?: ''
 
-                    currentBuild.displayName = "${selected} @ ${env.RESOLVED_TAG}${params.DRY_RUN ? ' (dry-run)' : ''}"
+                    def tag = params.TAG?.trim()
+                    // The tag dropdown falls back to bracketed placeholders when
+                    // it cannot reach the remote; those are not real tags.
+                    if (!tag || tag.startsWith('--') || tag.startsWith('ERROR')) {
+                        error("No valid tag selected (got '${params.TAG}'). Pick a repository first so the TAG list can load.")
+                    }
+                    env.RESOLVED_TAG = tag
+
+                    currentBuild.displayName = "${params.REPOSITORY} @ ${env.RESOLVED_TAG}${params.DRY_RUN ? ' (dry-run)' : ''}"
 
                     echo """
-                    Repository : ${selected}
+                    Repository : ${params.REPOSITORY}
                     URL        : ${env.REPO_URL}
                     Tag        : ${env.RESOLVED_TAG}
-                    Packages   : ${params.PACKAGES}
-                    Registry   : ${params.REGISTRY}
-                    Dist-tag   : ${params.NPM_DIST_TAG}
+                    Registry   : ${env.REGISTRY}
+                    Dist-tag   : ${env.NPM_DIST_TAG}
                     Dry run    : ${params.DRY_RUN}
                     """.stripIndent()
                 }
@@ -311,22 +389,9 @@ process.stdout.write(rows.join('\\n'));
                         """.stripIndent().trim())
                     }
 
-                    // Honour an explicit selection, and fail loudly on a typo
-                    // rather than silently publishing a different set.
-                    def selected = publishable
-                    if (params.PACKAGES?.trim() && params.PACKAGES.trim() != 'all') {
-                        def wanted = params.PACKAGES.split(',').collect { it.trim() }.findAll { it }
-                        def known = publishable.collect { it.name }
-                        def unknown = wanted.findAll { !known.contains(it) }
-                        if (unknown) {
-                            error("Unknown package(s): ${unknown.join(', ')}\nPublishable here: ${known.join(', ')}")
-                        }
-                        selected = publishable.findAll { wanted.contains(it.name) }
-                    }
-
-                    env.SELECTED_PACKAGES = selected.collect { "${it.name}|${it.version}|${it.dir}" }.join('\n')
-                    echo "\nSelected for publish (${selected.size()}):"
-                    selected.each { echo "  ${it.name}@${it.version}" }
+                    env.SELECTED_PACKAGES = publishable.collect { "${it.name}|${it.version}|${it.dir}" }.join('\n')
+                    echo "\nSelected for publish (${publishable.size()}):"
+                    publishable.each { echo "  ${it.name}@${it.version}" }
                 }
             }
         }
@@ -399,6 +464,7 @@ process.stdout.write(rows.join('\\n'));
                                 echo "//$registry_host/:_authToken=$RESOLVED_NPM_TOKEN"
                             } > "$NPM_CONFIG_USERCONFIG"
                         '''
+
                         // A dry run should still work with a placeholder
                         // token, so only a real publish treats this as fatal.
                         def whoami = sh(
@@ -409,7 +475,7 @@ process.stdout.write(rows.join('\\n'));
                             if (params.DRY_RUN) {
                                 echo 'WARNING: npm whoami failed. Continuing because this is a dry run.'
                             } else {
-                                error("npm whoami failed against ${params.REGISTRY}. The token is missing, expired, or lacks access.")
+                                error("npm whoami failed against ${env.REGISTRY}. The token is missing, expired, or lacks access.")
                             }
                         }
                     }
@@ -460,7 +526,7 @@ process.stdout.write(rows.join('\\n'));
                                     cd "\$SRC/${relDir}"
                                     npm publish \
                                         --access public \
-                                        --tag "\$NPM_DIST_TAG_VALUE" \
+                                        --tag "\$NPM_DIST_TAG" \
                                         --registry "\$REGISTRY" \
                                         ${dryFlag}
                                 """
@@ -497,8 +563,8 @@ process.stdout.write(rows.join('\\n'));
             script {
                 echo """
                 ================ SUMMARY ================
-                Repository : ${params.REPOSITORY}
-                Tag        : ${params.TAG}
+                Repository : ${params.REPOSITORY ?: '-'}
+                Tag        : ${params.TAG ?: '-'}
                 Mode       : ${params.DRY_RUN ? 'DRY RUN (nothing was published)' : 'PUBLISHED'}
                 Published  : ${env.SUMMARY_PUBLISHED ?: '-'}
                 Skipped    : ${env.SUMMARY_SKIPPED ?: '-'}
@@ -517,18 +583,13 @@ process.stdout.write(rows.join('\\n'));
 
 /**
  * Resolves the npm token and runs `body` with it exposed as
- * RESOLVED_NPM_TOKEN. Order: TOKEN parameter, then the "npm-token" Jenkins
- * credential, then NPM_TOKEN from the agent environment.
- *
- * NPM_DIST_TAG_VALUE is bound here too so the publish shell can read the
- * dist-tag without Groovy interpolating it into the command string.
+ * RESOLVED_NPM_TOKEN. Order: NPM_TOKEN parameter, then the "npm-token"
+ * Jenkins credential, then NPM_TOKEN from the agent environment.
  */
 def withNpmToken(Closure body) {
-    def extraEnv = ["NPM_DIST_TAG_VALUE=${params.NPM_DIST_TAG}"]
-
     if (params.NPM_TOKEN?.trim()) {
         echo 'Using npm token from the build parameter.'
-        withEnv(extraEnv + ["RESOLVED_NPM_TOKEN=${params.NPM_TOKEN}"]) {
+        withEnv(["RESOLVED_NPM_TOKEN=${params.NPM_TOKEN}"]) {
             body()
         }
         return
@@ -545,17 +606,15 @@ def withNpmToken(Closure body) {
 
     if (hasCredential) {
         echo 'Using the "npm-token" Jenkins credential.'
-        withEnv(extraEnv) {
-            withCredentials([string(credentialsId: 'npm-token', variable: 'RESOLVED_NPM_TOKEN')]) {
-                body()
-            }
+        withCredentials([string(credentialsId: 'npm-token', variable: 'RESOLVED_NPM_TOKEN')]) {
+            body()
         }
         return
     }
 
     if (env.NPM_TOKEN?.trim()) {
         echo 'Using NPM_TOKEN from the agent environment.'
-        withEnv(extraEnv + ["RESOLVED_NPM_TOKEN=${env.NPM_TOKEN}"]) {
+        withEnv(["RESOLVED_NPM_TOKEN=${env.NPM_TOKEN}"]) {
             body()
         }
         return
