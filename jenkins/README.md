@@ -107,10 +107,14 @@ A summary of published / skipped / failed prints in `post`.
    parameter and agent env are the fallbacks).
 4. Build with Parameters.
 
-Required agent tooling: `git`, `node`, `npm`. Plugins: Pipeline, Git,
-Credentials Binding, Timestamper, Workspace Cleanup. Unlike
-`build.Jenkinsfile`, no Git Parameter plugin is needed — `TAG` is a validated
-string, which is what allows one job to serve several repositories.
+Required agent tooling: `git`, `node`, `npm`.
+
+Plugins: **Pipeline**, **Git**, **Credentials Binding** — and nothing else.
+The pipeline deliberately avoids `timestamps()` (Timestamper plugin) and
+`cleanWs()` (Workspace Cleanup plugin), using the core `deleteDir()` step
+instead, so it runs on a stock Jenkins. Unlike `build.Jenkinsfile`, no Git
+Parameter plugin is needed either — `TAG` is a validated string, which is
+what allows one job to serve several repositories.
 
 ### Examples
 

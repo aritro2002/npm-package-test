@@ -32,7 +32,8 @@ pipeline {
     agent any
 
     options {
-        timestamps()
+        // No timestamps() here: it needs the Timestamper plugin. Everything
+        // used below ships with core Pipeline.
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '30'))
         timeout(time: 45, unit: 'MINUTES')
@@ -507,7 +508,9 @@ process.stdout.write(rows.join('\\n'));
             }
         }
         cleanup {
-            cleanWs()
+            // deleteDir() is a core Pipeline step; cleanWs() would need the
+            // Workspace Cleanup plugin.
+            deleteDir()
         }
     }
 }
